@@ -1,0 +1,200 @@
+from flask import Flask, render_template_string, request, jsonify
+import re
+
+app = Flask(__name__)
+
+# --- BACKEND ATTIC CONVERSION ENGINE ---
+
+def latin_to_attic_text(text):
+    if not text:
+        return ""
+    
+    # 1. Consonant clusters
+    text = re.sub(r'th', 'θ', text, flags=re.IGNORECASE)
+    text = re.sub(r'ph', 'ϕ', text, flags=re.IGNORECASE)
+    text = re.sub(r'ch', 'χ', text, flags=re.IGNORECASE)
+    text = re.sub(r'ps', 'ψ', text, flags=re.IGNORECASE)
+    text = re.sub(r'ks', 'ξ', text, flags=re.IGNORECASE)
+    
+    # 2. Base Consonants
+    consonant_map = {
+        'b': 'β', 'g': 'γ', 'd': 'δ', 'z': 'ζ', 'k': 'κ', 
+        'l': 'λ', 'm': 'μ', 'n': 'ν', 'p': 'π', 'r': 'ρ', 
+        's': 'σ', 't': 'τ', 'f': 'ϕ'
+    }
+    for k, v in consonant_map.items():
+        text = text.replace(k, v).replace(k.upper(), v.upper())
+        
+    # Final sigma variant adjustment (simple rule)
+    text = re.sub(r'σ(?=[\s.,;]|$)', 'ς', text)
+
+    # 3. Vowels, Lengths, and Subscripts
+    # Long vowels with iota subscript indicators (e.g., a| -> ᾳ, o| -> ῳ, e| -> ῃ)
+    text = re.sub(r'ā\|', 'ᾳ', text, flags=re.IGNORECASE)
+    text = re.sub(r'ē\|', 'ῃ', text, flags=re.IGNORECASE)
+    text = re.sub(r'ō\|', 'ῳ', text, flags=re.IGNORECASE)
+    
+    # Standard Macrons / Long vowels
+    text = re.sub(r'ā', 'ᾱ', text)
+    text = re.sub(r'ē', 'η', text)
+    text = re.sub(r'ō', 'ω', text)
+    text = re.sub(r'ī', 'ῑ', text)
+    text = re.sub(r'ū', 'ῡ', text)
+
+    # Base short vowels
+    vowel_map = {'a': 'α', 'e': 'ε', 'i': 'ι', 'o': 'ο', 'u': 'υ', 'y': 'υ'}
+    for k, v in vowel_map.items():
+        text = text.replace(k, v).replace(k.upper(), v.upper())
+
+    # 4. Rough/Smooth breathings with initial 'h'
+    # h + vowel becomes rough breathing; initial vowel without h defaults to smooth breathing
+    text = re.sub(r'h([αεηιωυορ])', r'̔\1', text, flags=re.IGNORECASE) # placeholder logic for breathing
+    
+    return text
+
+def int_to_attic_numerals(num_str):
+    try:
+        n = int(num_str)
+    except ValueError:
+        return num_str
+    
+    if n <= 0:
+        return str(n)
+
+    # Herodianic / Attic Acrophonic Numbers
+    # M = 10000, X = 1000, H = 100, Δ = 10, Γ = 5, I = 1
+    thousands, n = divmod(n, 1000)
+    hundreds, n = divmod(n, 100)
+    tens, n = divmod(n, 10)
+    units = n
+
+    res = []
+    
+    # Thousands (X)
+    if thousands > 0:
+        if thousands == 5:
+            res.append('𐅄') # 5000 ligature symbol if needed, or repeated X
+        else:
+            res.append('Χ' * thousands)
+            
+    # Hundreds (H)
+    if hundreds > 0:
+        if hundreds >= 5:
+            res.append('𐅃' + 'Η' * (hundreds - 5)) # 500 enclosure or simple layout
+        else:
+            res.append('Η' * hundreds)
+            
+    # Tens (Δ)
+    if tens > 0:
+        if tens >= 5:
+            res.append('𐅂' + 'Δ' * (tens - 5)) # 50 enclosure
+        else:
+            res.append('Δ' * tens)
+            
+    # Units (I / Γ)
+    if units > 0:
+        if units >= 5:
+            res.append('Γ' + 'Ι' * (units - 5))
+        else:
+            res.append('Ι' * units)
+            
+    return "".join(res)
+
+# --- HTML FRONTEND INTERFACE ---
+
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Latin to Attic Greek & Numerals Converter</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f4f6f9; color: #333; margin: 0; padding: 40px; }
+        .container { max-width: 900px; margin: auto; background: #fff; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); }
+        h2 { margin-top: 0; color: #1a365d; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 20px; }
+        .pane { display: flex; flex-direction: column; }
+        label { font-weight: 600; margin-bottom: 8px; font-size: 0.9rem; color: #4a5568; }
+        textarea, input[type="text"] { width: 100%; height: 180px; padding: 12px; border: 1px solid #cbd5e0; border-radius: 8px; font-size: 1.1rem; resize: vertical; box-sizing: border-box; font-family: inherit; }
+        textarea:focus, input:focus { outline: none; border-color: #3182ce; box-shadow: 0 0 0 3px rgba(49,130,206,0.1); }
+        .controls { margin-top: 20px; display: flex; gap: 15px; align-items: center; }
+        button { background: #3182ce; color: white; border: none; padding: 10px 20px; font-size: 1rem; border-radius: 6px; cursor: pointer; font-weight: 600; transition: background 0.2s; }
+        button:hover { background: #2b6cb0; }
+        .helper-text { font-size: 0.85rem; color: #718096; margin-top: 5px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>Latin Script ➔ Attic Greek Script & Numerals</h2>
+        <p class="helper-text">Type latin transcription strings (e.g., use <code>ō|</code> for iota subscript, <code>th</code> for θ, and whole numbers like <code>1985</code> for Herodianic numerals).</p>
+        
+        <div class="grid">
+            <div class="pane">
+                <label for="input-text">Input (Latin / Numbers):</label>
+                <textarea id="input-text" placeholder="e.g., logōi 1985 th..."></textarea>
+            </div>
+            <div class="pane">
+                <label for="output-text">Attic Script & Epigraphic Output:</label>
+                <textarea id="output-text" readonly style="background: #f7fafc;"></textarea>
+            </div>
+        </div>
+
+        <div class="controls">
+            <button id="convert-btn">Convert Stream</button>
+            <span class="helper-text" id="status-indicator">Ready</span>
+        </div>
+    </div>
+
+    <script>
+        const inputField = document.getElementById('input-text');
+        const outputField = document.getElementById('output-text');
+        const convertBtn = document.getElementById('convert-btn');
+        const statusIndicator = document.getElementById('status-indicator');
+
+        async function performConversion() {
+            const val = inputField.value;
+            statusIndicator.textContent = "Converting...";
+            try {
+                const response = await fetch('/convert', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: val })
+                });
+                const data = await response.json();
+                outputField.value = data.result;
+                statusIndicator.textContent = "Success";
+            } catch (err) {
+                statusIndicator.textContent = "Error during conversion";
+            }
+        }
+
+        convertBtn.addEventListener('click', performConversion);
+        inputField.addEventListener('input', performConversion);
+    </script>
+</body>
+</html>
+"""
+
+@app.route("/")
+def index():
+    return render_template_string(HTML_TEMPLATE)
+
+@app.route("/convert", methods=["POST"])
+def convert():
+    data = request.get_json()
+    raw_text = data.get("text", "")
+    
+    # Tokenize words and numbers for dual handling
+    tokens = re.split(r'(\s+|\d+)', raw_text)
+    processed_tokens = []
+    
+    for token in tokens:
+        if token.isdigit():
+            processed_tokens.append(int_to_attic_numerals(token))
+        else:
+            processed_tokens.append(latin_to_attic_text(token))
+            
+    return jsonify({"result": "".join(processed_tokens)})
+
+if __name__ == "__main__":
+    app.run(debug=True, port=5000)
